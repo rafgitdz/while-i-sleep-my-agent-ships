@@ -1,0 +1,93 @@
+{
+  "project": "Example marketplace",
+  "branchName": "ralph/favorite-listings",
+  "description": "Let signed-in users set a listing aside: a heart button on every listing card and a My favorites page. Each favorite keeps a snapshot of the listing's display fields and stays readable after the listing expires or is deleted. Out of scope: notifications, folders, sharing, anonymous favorites.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "API contract for favorites",
+      "description": "As a developer, I change the OpenAPI contract first (the project is contract-first) to expose the favorites endpoints.",
+      "acceptanceCriteria": [
+        "openapi/favorite-api.yaml declares POST /api/favorites, DELETE /api/favorites/{listingId}, GET /api/favorites (paginated) and GET /api/favorites/ids",
+        "POST answers 201, 401, 404, 409 (already a favorite), 422",
+        "/api/favorites/ids is declared before /api/favorites/{listingId}",
+        "The build generates the FavoriteApi interface; generated code is never edited",
+        "Build passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Favorite model, snapshot and repository",
+      "description": "As a developer, I store a favorite with a snapshot of the listing's display fields.",
+      "acceptanceCriteria": [
+        "Favorite holds userId, listingId, createdAt and an embedded ListingSnapshot",
+        "Uniqueness of (userId, listingId) is checked in the service, not only by an index",
+        "Repository tests pass"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Create and delete a favorite",
+      "description": "As a signed-in user, I add or remove a favorite.",
+      "acceptanceCriteria": [
+        "Adding an existing favorite returns 409 with an RFC 7807 problem body",
+        "Adding a favorite on an unknown listing returns 404",
+        "Deleting is idempotent from the user's point of view",
+        "Unit tests cover the three cases; all tests pass"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "List favorites with fallback on the snapshot",
+      "description": "As a signed-in user, I see my favorites, even those whose listing is gone.",
+      "acceptanceCriteria": [
+        "Each item exposes sourceAvailable and expired",
+        "When the listing still exists, the snapshot is refreshed on read",
+        "When it does not, the snapshot is returned, read-only",
+        "All tests pass"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Heart button on listing cards",
+      "description": "As a signed-in user, I toggle a favorite from a listing card.",
+      "acceptanceCriteria": [
+        "The button is hidden for anonymous visitors",
+        "Clicking it does not follow the card link (stopPropagation + preventDefault)",
+        "The state comes from a single call to /api/favorites/ids",
+        "Component tests pass",
+        "Verify in browser"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "My favorites page",
+      "description": "As a signed-in user, I browse my favorites in my account area.",
+      "acceptanceCriteria": [
+        "Paginated list, newest first",
+        "Expired and No longer available badges; no contact button on those items",
+        "Empty state with a link back to the listings",
+        "Component tests pass",
+        "Verify in browser"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

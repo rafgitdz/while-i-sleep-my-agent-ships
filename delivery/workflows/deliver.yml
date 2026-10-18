@@ -1,0 +1,20 @@
+# The ONLY way to put this service in production.
+#
+# Give the immutable tag published by CI (sha-xxxxxxx). The same button
+# redeploys, and rolls back on purpose: just pick an older tag.
+name: Deliver to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (sha-a1b2c3d; an older one to roll back)"
+        type: string
+        required: true
+
+jobs:
+  deliver:
+    uses: ./.github/workflows/deliver-reusable.yml
+    with:
+      tag: ${{ inputs.tag }}
+    secrets: inherit

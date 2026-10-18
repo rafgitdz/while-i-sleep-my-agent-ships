@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  loop:
+    name: Loop script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck
+        run: shellcheck --severity=warning ralph/ralph.sh
+      - name: Dry run
+        run: ./ralph/ralph.sh --dry-run 3
+
+  examples:
+    name: Example PRD
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: prd.json is valid and well formed
+        run: |
+          jq -e '
+            (.branchName | startswith("ralph/")) and
+            (.userStories | length > 0) and
+            all(.userStories[]; has("id") and has("title") and has("acceptanceCriteria") and has("priority") and has("passes"))
+          ' examples/prd.json
+
+  workflows:
+    name: Delivery templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color \
+            .github/workflows/*.yml delivery/workflows/*.yml

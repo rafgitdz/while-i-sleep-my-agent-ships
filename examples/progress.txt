@@ -1,0 +1,22 @@
+# Ralph Progress Log
+Started: 2026-10-02
+---
+
+## Codebase Patterns
+- Contract-first: change `openapi/*.yaml`, run the build, then write code. Never edit generated sources.
+- A new `*-api.yaml` file is not generated on its own: add its `<execution>` block to the build file too.
+- Path order matters: declare `/api/favorites/ids` BEFORE `/api/favorites/{listingId}`, or `ids` is captured as an id.
+- A unique compound index annotation does NOT create the index (auto-creation is off by default): check uniqueness in the service.
+- JUnit 5 does not run `static` nested classes: put an extra test in its own top-level file, or it is silently skipped.
+- Frontend tests: call `fixture.detectChanges()` BEFORE `httpTesting.expectOne()` when `ngOnInit` triggers an HTTP call.
+- Before committing, check which git repository you are in: in a multi-repo workspace, a commit at the root does not include the sub-repositories. A previous run lost two iterations on this.
+---
+
+## 2026-10-02 - US-001 - API contract for favorites
+- Created `openapi/favorite-api.yaml` with the four operations and their schemas.
+- Added the `generate-favorite-api` execution to the build.
+- Build passes; `FavoriteApi` and the four DTOs are generated.
+- **Learnings for future iterations:**
+  - Query enums of type `string` are generated as `String`, not as a Java enum: the service validates the value itself.
+  - `page`/`size` with a `default` are generated as boxed `Integer`.
+---

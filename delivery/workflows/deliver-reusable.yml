@@ -1,0 +1,157 @@
+# Deliver one service to a VPS running docker compose.
+#
+# The image was built and tested by CI: the server compiles nothing, it pulls
+# and restarts. The switch takes seconds, and what ships is exactly what passed
+# the tests.
+#
+# Repository variables: SERVICE (compose service), CONTAINER (container name),
+#   DEPLOY_DIR (folder holding docker-compose.yml), INTERNAL_HEALTH_URL (seen
+#   from inside the container), PUBLIC_HEALTH_URL (a real user path through the
+#   reverse proxy), TAG_VARIABLE (env variable read by compose for the image tag).
+# Secrets: DEPLOY_SSH_KEY, DEPLOY_HOST, DEPLOY_USER, GHCR_PULL_TOKEN.
+name: Deliver (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Image tag to deliver
+        type: string
+        required: true
+
+concurrency:
+  # One delivery at a time, never cancelled: interrupting it would leave the
+  # service in an unknown state.
+  group: production-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deliver:
+    name: Deliver ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SERVICE: ${{ vars.SERVICE }}
+      CONTAINER: ${{ vars.CONTAINER }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
+      TAG_VARIABLE: ${{ vars.TAG_VARIABLE }}
+      REMOTE: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+    steps:
+      - name: Validate the tag
+        # The tag ends up in a remote shell command: accept nothing but a tag.
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^(sha-[0-9a-f]{7,40}|main)$ ]] || { echo "::error::Invalid tag: $TAG"; exit 1; }
+
+      - name: Prepare the SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy
+        id: deploy
+        env:
+          TAG: ${{ inputs.tag }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          previous=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "$REMOTE" \
+            "TAG='$TAG' GHCR_TOKEN='$GHCR_TOKEN' GHCR_USER='$GHCR_USER' SERVICE='$SERVICE' CONTAINER='$CONTAINER' DEPLOY_DIR='$DEPLOY_DIR' TAG_VARIABLE='$TAG_VARIABLE' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          git pull --ff-only >&2
+
+          # The tag currently in service is the rollback target. Only a GHCR
+          # image with a tag is a valid target: a locally built container has
+          # none, and rolling back to it would fail exactly when it is needed.
+          image=$(docker inspect --format '{{.Config.Image}}' "$CONTAINER" 2>/dev/null || true)
+          case "$image" in
+            ghcr.io/*:*) previous=${image##*:} ;;
+            *) previous='' ;;
+          esac
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >&2
+          export "$TAG_VARIABLE=$TAG"
+          docker compose pull "$SERVICE" >&2
+          docker compose up -d "$SERVICE" >&2
+          # The token does not stay on the server's disk.
+          docker logout ghcr.io >&2
+
+          echo "$previous"
+          REMOTE_SCRIPT
+          )
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "Previous version: ${previous:-none}"
+
+      - name: Health probes
+        id: probe
+        continue-on-error: true
+        env:
+          INTERNAL_HEALTH_URL: ${{ vars.INTERNAL_HEALTH_URL }}
+          PUBLIC_HEALTH_URL: ${{ vars.PUBLIC_HEALTH_URL }}
+        run: |
+          set -uo pipefail
+          # Internal probe: join the container's network namespace, so the
+          # actuator does not need to be reachable from outside.
+          internal=$(ssh -i ~/.ssh/deploy -o BatchMode=yes "$REMOTE" \
+            "for i in \$(seq 1 18); do
+               if docker run --rm --network container:$CONTAINER curlimages/curl:8.11.1 -fsS '$INTERNAL_HEALTH_URL' >/dev/null 2>&1; then
+                 echo ok; exit 0
+               fi
+               sleep 5
+             done
+             echo ko") || internal=ko
+
+          # External probe: the real path of a user, through the reverse proxy.
+          external=ko
+          for _ in $(seq 1 18); do
+            if curl -fsS --max-time 10 "$PUBLIC_HEALTH_URL" >/dev/null; then external=ok; break; fi
+            sleep 5
+          done
+
+          echo "internal=$internal external=$external"
+          [ "$internal" = ok ] && [ "$external" = ok ]
+
+      - name: Roll back
+        # Delivery is manual, so someone is watching. Rollback stays automatic
+        # anyway: it restores service faster than a human, without picking the
+        # wrong tag.
+        if: steps.probe.outcome == 'failure' && steps.deploy.outputs.previous != ''
+        env:
+          PREVIOUS: ${{ steps.deploy.outputs.previous }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "::warning::Health probe failed, rolling back to $PREVIOUS"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "$REMOTE" \
+            "TAG='$PREVIOUS' GHCR_TOKEN='$GHCR_TOKEN' GHCR_USER='$GHCR_USER' SERVICE='$SERVICE' DEPLOY_DIR='$DEPLOY_DIR' TAG_VARIABLE='$TAG_VARIABLE' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          export "$TAG_VARIABLE=$TAG"
+          docker compose up -d "$SERVICE"
+          docker logout ghcr.io
+          REMOTE_SCRIPT
+
+      - name: Service status
+        if: always()
+        run: |
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "$REMOTE" \
+            "cd '$DEPLOY_DIR' && docker compose ps --format 'table {{.Name}}\t{{.Status}}'"
+
+      - name: Fail if the probe did not pass
+        if: steps.probe.outcome == 'failure'
+        run: |
+          echo "::error::Delivery failed. The previous version was restored if there was one."
+          exit 1
