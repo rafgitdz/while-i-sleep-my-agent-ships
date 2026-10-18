@@ -37,7 +37,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: actionlint
+      - name: actionlint (this repository)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color
+      - name: actionlint (templates, laid out as in a product repository)
         run: |
-          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color \
-            .github/workflows/*.yml delivery/workflows/*.yml
+          mkdir -p /tmp/product/.github/workflows
+          cp delivery/workflows/*.yml /tmp/product/.github/workflows/
+          git -C /tmp/product init -q
+          docker run --rm -v /tmp/product:/repo -w /repo rhysd/actionlint:1.7.12 -no-color
